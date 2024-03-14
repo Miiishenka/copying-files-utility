@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -52,15 +51,14 @@ func validatedConvs(convs string) ([]string, error) {
 
 func ParseFlags() (*Options, error) {
 	var opts Options
+	var convs string
 
 	flag.StringVar(&opts.From, "from", "", "file to read. by default - stdin")
 	flag.StringVar(&opts.To, "to", "", "file to write. by default - stdout")
 	flag.Uint64Var(&opts.Offset, "offset", 0, "the number of bytes, that must be skipped")
 	flag.Uint64Var(&opts.Limit, "limit", math.MaxInt, "maximum number of bytes read")
 	flag.Uint64Var(&opts.BlockSize, "block-size", 1024, "size of one block in bytes when reading and writing")
-	var convs string
 	flag.StringVar(&convs, "conv", "", "one or more of the possible transformations on the text")
-	// todo: parse and validate all flags
 
 	flag.Parse()
 
@@ -73,132 +71,109 @@ func ParseFlags() (*Options, error) {
 	return &opts, nil
 }
 
-type MapReader struct {
-	file    io.Reader
+func copyFromChecked(dst []byte, src *[]byte) int {
+	length := min(len(dst), len(*src))
+	copy(dst[:length], (*src)[:length])
+	*src = (*src)[length:]
+	return length
+}
+
+type CaseReader struct {
+	reader  io.Reader
 	toUpper bool
-	safe    []byte
+	mapped  []byte
 	buffer  []byte
 }
 
-func (mr *MapReader) Read(p []byte) (n int, err error) {
-	if len(mr.safe) != 0 {
-		if len(p) < len(mr.safe) {
-			copy(p, mr.safe[:len(p)])
-			mr.safe = mr.safe[len(p):]
-			return len(p), nil
-		}
-		copy(p[:len(mr.safe)], mr.safe)
-		prevLen := len(mr.safe)
-		mr.safe = make([]byte, 0)
-		return prevLen, nil
-
+func (cr *CaseReader) Read(p []byte) (n int, err error) {
+	if len(cr.mapped) != 0 {
+		return copyFromChecked(p, &cr.mapped), nil
 	}
 
 	buffer := make([]byte, len(p))
-	n, err = mr.file.Read(buffer)
+	n, err = cr.reader.Read(buffer)
 	if err != nil {
 		return n, err
 	}
+	cr.buffer = append(cr.buffer, buffer[:n]...)
 
-	right := 0
-	mr.buffer = append(mr.buffer, bytes.TrimRight(buffer, "\x00")...)
-	for i := 0; i < len(mr.buffer); {
-		r, size := utf8.DecodeRune(mr.buffer[i:])
+	var i, runeSize int
+	var r rune
+	for i = 0; i < len(cr.buffer); i += runeSize {
+		r, runeSize = utf8.DecodeRune(cr.buffer[i:])
 		if r == utf8.RuneError {
-			mr.buffer = mr.buffer[right:]
-			return mr.Read(p)
+			break
 		}
 
-		if mr.toUpper {
-			mr.safe = append(mr.safe, []byte(strings.ToUpper(string(r)))...)
+		if cr.toUpper {
+			cr.mapped = append(cr.mapped, []byte(strings.ToUpper(string(r)))...)
 		} else {
-			mr.safe = append(mr.safe, []byte(strings.ToLower(string(r)))...)
+			cr.mapped = append(cr.mapped, []byte(strings.ToLower(string(r)))...)
 		}
-
-		right += size
-		i += size
 	}
 
-	mr.buffer = mr.buffer[right:]
-
-	return mr.Read(p)
+	cr.buffer = cr.buffer[i:]
+	return cr.Read(p)
 }
 
 type TrimReader struct {
-	file    io.Reader
-	buffer  []byte
-	safe    []byte
-	skipped bool
+	reader        io.Reader
+	buffer        []byte
+	trimmed       []byte
+	skippedSpaces bool
 }
 
 func (tr *TrimReader) Read(p []byte) (n int, err error) {
-	if len(tr.safe) != 0 {
-		if len(p) < len(tr.safe) {
-			copy(p, tr.safe[:len(p)])
-			tr.safe = tr.safe[len(p):]
-			return len(p), nil
-		}
-		copy(p[:len(tr.safe)], tr.safe)
-		prevLen := len(tr.safe)
-		tr.safe = make([]byte, 0)
-		return prevLen, nil
+	if len(tr.trimmed) != 0 {
+		return copyFromChecked(p, &tr.trimmed), nil
 	}
 
 	buffer := make([]byte, len(p))
-	n, err = tr.file.Read(buffer)
+	n, err = tr.reader.Read(buffer)
 	if err != nil {
 		return n, err
 	}
+	tr.buffer = append(tr.buffer, buffer[:n]...)
 
-	tr.buffer = append(tr.buffer, bytes.TrimRight(buffer, "\x00")...)
-	right := 0
-	for i := 0; i < len(tr.buffer); {
-		r, size := utf8.DecodeRune(tr.buffer[i:])
+	var runeSize, firstSpacePos int
+	var r rune
+	for i := 0; i < len(tr.buffer); i += runeSize {
+		r, runeSize = utf8.DecodeRune(tr.buffer[i:])
 		if r == utf8.RuneError {
-			tr.buffer = tr.buffer[right:]
-			return tr.Read(p)
+			break
 		}
 
 		if unicode.IsSpace(r) {
-			i += size
 			continue
 		}
 
-		if !tr.skipped && !unicode.IsSpace(r) {
-			tr.skipped = true
-			tr.safe = append(tr.safe, tr.buffer[i:i+size]...)
-			right = i + size
-			i += size
-			continue
+		if tr.skippedSpaces {
+			tr.trimmed = append(tr.trimmed, tr.buffer[firstSpacePos:i+runeSize]...)
+		} else {
+			tr.trimmed = append(tr.trimmed, tr.buffer[i:i+runeSize]...)
+			tr.skippedSpaces = true
 		}
-
-		if !unicode.IsSpace(r) {
-			tr.safe = append(tr.safe, tr.buffer[right:i+size]...)
-			right = i + size
-			i += size
-			continue
-		}
+		firstSpacePos = i + runeSize
 	}
 
-	tr.buffer = tr.buffer[right:]
-
+	tr.buffer = tr.buffer[firstSpacePos:]
 	return tr.Read(p)
 }
 
 func CreateReader(opts *Options) (io.Reader, error) {
-	var file io.Reader
+	var reader io.Reader
 	var err error
 
 	if opts.From == "" {
-		file = os.Stdin
+		reader = os.Stdin
 	} else {
-		file, err = os.Open(opts.From)
+		reader, err = os.Open(opts.From)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	n, err := io.CopyN(io.Discard, file, int64(opts.Offset))
+	n, err := io.CopyN(io.Discard, reader, int64(opts.Offset))
 	if err != nil {
 		return nil, err
 	}
@@ -206,22 +181,22 @@ func CreateReader(opts *Options) (io.Reader, error) {
 		return nil, fmt.Errorf("error while skipping bytes")
 	}
 
-	file = io.LimitReader(file, int64(opts.Limit))
+	reader = io.LimitReader(reader, int64(opts.Limit))
 
 	if len(opts.Conv) != 0 {
 		for _, val := range opts.Conv {
 			switch val {
 			case "lower_case":
-				file = &MapReader{file: file, toUpper: false}
+				reader = &CaseReader{reader: reader, toUpper: false}
 			case "upper_case":
-				file = &MapReader{file: file, toUpper: true}
+				reader = &CaseReader{reader: reader, toUpper: true}
 			case "trim_spaces":
-				file = &TrimReader{file: file}
+				reader = &TrimReader{reader: reader}
 			}
 		}
 	}
 
-	return file, nil
+	return reader, nil
 }
 
 func createWriter(to string) (io.Writer, error) {
