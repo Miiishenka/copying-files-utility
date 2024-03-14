@@ -78,7 +78,6 @@ type MapReader struct {
 	toUpper bool
 	safe    []byte
 	buffer  []byte
-	pos     int
 }
 
 func (mr *MapReader) Read(p []byte) (n int, err error) {
@@ -87,12 +86,12 @@ func (mr *MapReader) Read(p []byte) (n int, err error) {
 			copy(p, mr.safe[:len(p)])
 			mr.safe = mr.safe[len(p):]
 			return len(p), nil
-		} else {
-			copy(p[:len(mr.safe)], mr.safe)
-			prevLen := len(mr.safe)
-			mr.safe = make([]byte, 0)
-			return prevLen, nil
 		}
+		copy(p[:len(mr.safe)], mr.safe)
+		prevLen := len(mr.safe)
+		mr.safe = make([]byte, 0)
+		return prevLen, nil
+
 	}
 
 	buffer := make([]byte, len(p))
@@ -138,12 +137,11 @@ func (tr *TrimReader) Read(p []byte) (n int, err error) {
 			copy(p, tr.safe[:len(p)])
 			tr.safe = tr.safe[len(p):]
 			return len(p), nil
-		} else {
-			copy(p[:len(tr.safe)], tr.safe)
-			prevLen := len(tr.safe)
-			tr.safe = make([]byte, 0)
-			return prevLen, nil
 		}
+		copy(p[:len(tr.safe)], tr.safe)
+		prevLen := len(tr.safe)
+		tr.safe = make([]byte, 0)
+		return prevLen, nil
 	}
 
 	buffer := make([]byte, len(p))
