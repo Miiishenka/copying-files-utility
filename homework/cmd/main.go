@@ -73,7 +73,7 @@ func ParseFlags() (*Options, error) {
 	return &opts, nil
 }
 
-func copyFromChecked(dst []byte, src []byte) ([]byte, int) {
+func copyFromChecked(dst, src []byte) ([]byte, int) {
 	length := min(len(dst), len(src))
 	copy(dst[:length], src[:length])
 	src = src[length:]
