@@ -20,6 +20,8 @@ type Options struct {
 	Conv      []string
 }
 
+var ErrInvalidConv = fmt.Errorf("invalid argument of -conv")
+
 func validatedConvs(convs string) ([]string, error) {
 	if len(convs) == 0 {
 		return make([]string, 0), nil
@@ -35,7 +37,7 @@ func validatedConvs(convs string) ([]string, error) {
 
 	for _, val := range convValues {
 		if _, ok := convMap[val]; !ok {
-			return nil, fmt.Errorf("invalid argument of -conv")
+			return nil, fmt.Errorf("%w: unknown conv %s", ErrInvalidConv, val)
 		} else if val == "lower_case" {
 			hasLower = true
 		} else if val == "upper_case" {
@@ -43,7 +45,7 @@ func validatedConvs(convs string) ([]string, error) {
 		}
 	}
 	if hasLower && hasUpper {
-		return nil, fmt.Errorf("invalid argument of -conv")
+		return nil, fmt.Errorf("%w: lower and upper case cannot be used at the same time", ErrInvalidConv)
 	}
 
 	return convValues, nil
@@ -71,11 +73,11 @@ func ParseFlags() (*Options, error) {
 	return &opts, nil
 }
 
-func copyFromChecked(dst []byte, src *[]byte) int {
-	length := min(len(dst), len(*src))
-	copy(dst[:length], (*src)[:length])
-	*src = (*src)[length:]
-	return length
+func copyFromChecked(dst []byte, src []byte) ([]byte, int) {
+	length := min(len(dst), len(src))
+	copy(dst[:length], src[:length])
+	src = src[length:]
+	return src, length
 }
 
 type CaseReader struct {
@@ -87,7 +89,8 @@ type CaseReader struct {
 
 func (cr *CaseReader) Read(p []byte) (n int, err error) {
 	if len(cr.mapped) != 0 {
-		return copyFromChecked(p, &cr.mapped), nil
+		cr.mapped, n = copyFromChecked(p, cr.mapped)
+		return n, nil
 	}
 
 	buffer := make([]byte, len(p))
@@ -125,7 +128,8 @@ type TrimReader struct {
 
 func (tr *TrimReader) Read(p []byte) (n int, err error) {
 	if len(tr.trimmed) != 0 {
-		return copyFromChecked(p, &tr.trimmed), nil
+		tr.trimmed, n = copyFromChecked(p, tr.trimmed)
+		return n, nil
 	}
 
 	buffer := make([]byte, len(p))
